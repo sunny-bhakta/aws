@@ -18,7 +18,7 @@ permissions:
 jobs:
 
   # ============================================================
-  # 1. BUILD + TEST
+  # 1. BUILD AND TEST
   # ============================================================
   build-and-test:
     name: build-and-test
@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -49,7 +50,7 @@ jobs:
 
 
   # ============================================================
-  # 2. DOCKER BUILD + SMOKE TEST
+  # 2. BUILD DOCKER IMAGE + SMOKE TEST
   # ============================================================
   docker:
     name: docker-build
@@ -60,26 +61,40 @@ jobs:
       - build-and-test
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Explicitly verify which Dockerfile is being used
+      # --------------------------------------------------------
+      # Temporary verification
+      # Make sure GitHub is using YOUR Dockerfile
+      # --------------------------------------------------------
       - name: Verify Dockerfile
         run: |
           echo "=========================================="
-          echo "Dockerfile being used:"
-          echo "=========================================="
-          pwd
-          ls -la
-          echo ""
-          echo "Dockerfile contents:"
-          echo "=========================================="
-          cat ./Dockerfile
+          echo "Docker build directory"
           echo "=========================================="
 
+          pwd
+
+          echo ""
+          echo "Files:"
+          ls -la
+
+          echo ""
+          echo "Dockerfile:"
+          echo "=========================================="
+
+          cat ./Dockerfile
+
+          echo "=========================================="
+
+      # --------------------------------------------------------
+      # Build Docker image
+      # --------------------------------------------------------
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -88,9 +103,13 @@ jobs:
           push: false
           load: true
           tags: devops-nestjs-app:ci
+
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # --------------------------------------------------------
+      # Run container
+      # --------------------------------------------------------
       - name: Smoke test the container
         run: |
           docker run -d \
@@ -98,25 +117,45 @@ jobs:
             -p 3000:3000 \
             devops-nestjs-app:ci
 
+          echo "Waiting for application..."
+
           for i in $(seq 1 20); do
+
             if curl -fsS http://localhost:3000/health; then
               echo ""
-              echo "health check OK"
+              echo "=========================================="
+              echo "Health check OK"
+              echo "=========================================="
               exit 0
             fi
 
             sleep 1
+
           done
 
-          echo "container failed to become healthy"
+          echo "=========================================="
+          echo "Container failed to become healthy"
+          echo "=========================================="
+
           docker logs app
+
           exit 1
 
+      # --------------------------------------------------------
+      # Show image information
+      # --------------------------------------------------------
       - name: Show image size
         if: always()
         run: |
+          echo "=========================================="
+          echo "Docker image"
+          echo "=========================================="
+
           docker image ls devops-nestjs-app:ci
 
+      # --------------------------------------------------------
+      # Cleanup
+      # --------------------------------------------------------
       - name: Cleanup
         if: always()
         run: |
@@ -124,7 +163,7 @@ jobs:
 
 
   # ============================================================
-  # 3. PUSH IMAGE TO AWS ECR
+  # 3. PUSH IMAGE TO ECR
   # ============================================================
   push-to-ecr:
     name: push-to-ecr
@@ -144,22 +183,38 @@ jobs:
       id-token: write
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
+      # --------------------------------------------------------
+      # Validate GitHub variables
+      # --------------------------------------------------------
       - name: Validate required AWS variables
         run: |
+
           test -n "${{ vars.AWS_ROLE_ARN }}" \
-            || (echo "Missing repo variable: AWS_ROLE_ARN" && exit 1)
+            || (
+              echo "Missing repository variable: AWS_ROLE_ARN"
+              exit 1
+            )
 
           test -n "${{ vars.ECR_REPOSITORY }}" \
-            || (echo "Missing repo variable: ECR_REPOSITORY" && exit 1)
+            || (
+              echo "Missing repository variable: ECR_REPOSITORY"
+              exit 1
+            )
 
       # --------------------------------------------------------
-      # OIDC DEBUG
+      # OIDC DEBUG INFORMATION
+      #
+      # IMPORTANT:
+      # We are NOT using github/actions-oidc-debugger.
+      # That action is what was causing the Alpine/Go error.
       # --------------------------------------------------------
       - name: Debug OIDC claims
         run: |
+
           echo "=========================================="
           echo "        GitHub OIDC Debug Information"
           echo "=========================================="
@@ -170,10 +225,16 @@ jobs:
           echo "repository_id:        ${{ github.repository_id }}"
           echo "ref:                  ${{ github.ref }}"
           echo "event:                ${{ github.event_name }}"
-          echo "workflow:              ${{ github.workflow }}"
+          echo "workflow:             ${{ github.workflow }}"
           echo "workflow_ref:         ${{ github.workflow_ref }}"
-          echo "role:                  ${{ vars.AWS_ROLE_ARN }}"
-          echo "region:                ${{ env.AWS_REGION }}"
+
+          echo ""
+          echo "AWS role:"
+          echo "${{ vars.AWS_ROLE_ARN }}"
+
+          echo ""
+          echo "AWS region:"
+          echo "${{ env.AWS_REGION }}"
 
           echo ""
           echo "Expected OIDC audience:"
@@ -183,12 +244,8 @@ jobs:
           echo "Expected OIDC subject:"
           echo "repo:${{ github.repository_owner }}@${{ github.repository_owner_id }}/${{ github.event.repository.name }}@${{ github.repository_id }}:ref:${{ github.ref }}"
 
+          echo ""
           echo "=========================================="
-
-      - name: Debug actual OIDC claims
-        uses: github/actions-oidc-debugger@main
-        with:
-          audience: sts.amazonaws.com
 
       # --------------------------------------------------------
       # AWS OIDC LOGIN
@@ -199,8 +256,12 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # --------------------------------------------------------
+      # Verify AWS authentication
+      # --------------------------------------------------------
       - name: Verify AWS identity
         run: |
+
           echo "=========================================="
           echo "             AWS Identity"
           echo "=========================================="
@@ -210,26 +271,29 @@ jobs:
           echo "=========================================="
 
       # --------------------------------------------------------
-      # ECR LOGIN
+      # Login to ECR
       # --------------------------------------------------------
       - name: Login to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      # --------------------------------------------------------
+      # Buildx
+      # --------------------------------------------------------
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
       # --------------------------------------------------------
-      # VERIFY DOCKERFILE
+      # Verify Dockerfile again
       # --------------------------------------------------------
       - name: Verify Dockerfile
         run: |
+
           echo "=========================================="
-          echo "Dockerfile being used for ECR build:"
+          echo "Dockerfile being used for ECR build"
           echo "=========================================="
 
           pwd
-          ls -la
 
           echo ""
           echo "Dockerfile contents:"
@@ -240,7 +304,7 @@ jobs:
           echo "=========================================="
 
       # --------------------------------------------------------
-      # BUILD + PUSH
+      # Build and push Docker image
       # --------------------------------------------------------
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -279,10 +343,17 @@ jobs:
 
     steps:
 
+      # --------------------------------------------------------
+      # Validate AWS role
+      # --------------------------------------------------------
       - name: Validate required AWS variables
         run: |
+
           test -n "${{ vars.AWS_ROLE_ARN }}" \
-            || (echo "Missing repo variable: AWS_ROLE_ARN" && exit 1)
+            || (
+              echo "Missing repository variable: AWS_ROLE_ARN"
+              exit 1
+            )
 
       # --------------------------------------------------------
       # AWS OIDC LOGIN
@@ -293,8 +364,12 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # --------------------------------------------------------
+      # Verify AWS authentication
+      # --------------------------------------------------------
       - name: Verify AWS identity
         run: |
+
           echo "=========================================="
           echo "             AWS Identity"
           echo "=========================================="
@@ -304,31 +379,52 @@ jobs:
           echo "=========================================="
 
       # --------------------------------------------------------
-      # ECS VARIABLES
+      # Validate ECS variables
       # --------------------------------------------------------
       - name: Validate required deployment variables
         run: |
+
           test -n "${{ vars.ECS_CLUSTER }}" \
-            || (echo "Missing repo variable: ECS_CLUSTER" && exit 1)
+            || (
+              echo "Missing repository variable: ECS_CLUSTER"
+              exit 1
+            )
 
           test -n "${{ vars.ECS_SERVICE }}" \
-            || (echo "Missing repo variable: ECS_SERVICE" && exit 1)
+            || (
+              echo "Missing repository variable: ECS_SERVICE"
+              exit 1
+            )
 
       # --------------------------------------------------------
-      # DEPLOY
+      # Force ECS deployment
       # --------------------------------------------------------
       - name: Force new ECS deployment
         run: |
+
+          echo "=========================================="
+          echo "Starting ECS deployment"
+          echo "=========================================="
+
           aws ecs update-service \
             --cluster "${{ vars.ECS_CLUSTER }}" \
             --service "${{ vars.ECS_SERVICE }}" \
             --force-new-deployment
 
       # --------------------------------------------------------
-      # WAIT FOR ECS
+      # Wait for ECS
       # --------------------------------------------------------
       - name: Wait for ECS service stability
         run: |
+
+          echo "=========================================="
+          echo "Waiting for ECS service to become stable"
+          echo "=========================================="
+
           aws ecs wait services-stable \
             --cluster "${{ vars.ECS_CLUSTER }}" \
             --services "${{ vars.ECS_SERVICE }}"
+
+          echo "=========================================="
+          echo "ECS deployment completed successfully"
+          echo "=========================================="
