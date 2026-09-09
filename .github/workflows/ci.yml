@@ -91,7 +91,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: docker
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Only runs on main. The OIDC trust policy pins sub to refs/heads/main,
+    # so pull_request runs would fail the assume-role step anyway.
+    if: >-
+      github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     env:
       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
     permissions:
@@ -145,8 +149,8 @@ jobs:
     needs: push-to-ecr
     # Skips cleanly until ECS_CLUSTER and ECS_SERVICE are set as repo variables.
     if: >-
-      github.event_name == 'push'
-      && github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && vars.ECS_CLUSTER != ''
       && vars.ECS_SERVICE != ''
     env:
