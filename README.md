@@ -1,4 +1,4 @@
-# NestJS AWS DevOps
+# NestJS AWS DevOps Starter
 
 A production-style NestJS starter focused on CI/CD with GitHub Actions, Docker, Amazon ECR, and Amazon ECS.
 

@@ -1,0 +1,41 @@
+{
+    "github": {
+        "owner": "<github-org-or-username>",
+        "repo": "<github-repo-name>",
+        "branch": "main"
+    },
+    "aws": {
+        "accountId": "831975835566",
+        "region": "ap-south-1",
+        "roleName": "github-actions-ecr-push",
+        "roleArn": "arn:aws:iam::831975835566:role/github-actions-ecr-push"
+    },
+    "ecr": {
+        "repository": "devops-nestjs-app",
+        "imageLatest": "831975835566.dkr.ecr.ap-south-1.amazonaws.com/devops-nestjs-app:latest",
+        "imageSha": "831975835566.dkr.ecr.ap-south-1.amazonaws.com/devops-nestjs-app:<GITHUB_SHA>"
+    },
+    "githubVariables": {
+        "AWS_REGION": "ap-south-1",
+        "AWS_ROLE_ARN": "arn:aws:iam::831975835566:role/github-actions-ecr-push",
+        "ECR_REPOSITORY": "devops-nestjs-app"
+    },
+    "iamTrustPolicyTemplate": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {
+                    "Federated": "arn:aws:iam::831975835566:oidc-provider/token.actions.githubusercontent.com"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                    "StringEquals": {
+                        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+                        "token.actions.githubusercontent.com:sub": "repo:sunny-bhakta@77013204/aws@1361501698:ref:refs/heads/main"
+                    }
+                }
+            }
+        ]
+    }
+}
