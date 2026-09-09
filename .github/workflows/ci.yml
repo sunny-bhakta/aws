@@ -16,10 +16,15 @@ permissions:
   id-token: write
 
 jobs:
+
+  # ============================================================
+  # BUILD + TEST
+  # ============================================================
   build-and-test:
     name: build-and-test
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,11 +47,18 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+
+  # ============================================================
+  # DOCKER BUILD + SMOKE TEST
+  # ============================================================
   docker:
     name: docker-build
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: build-and-test
+
+    needs:
+      - build-and-test
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,105 +78,239 @@ jobs:
 
       - name: Smoke test the container
         run: |
-          docker run -d --name app -p 3000:3000 devops-nestjs-app:ci
+          docker run -d \
+            --name app \
+            -p 3000:3000 \
+            devops-nestjs-app:ci
+
           for i in $(seq 1 20); do
             if curl -fsS http://localhost:3000/health; then
-              echo "" && echo "health check OK"
+              echo ""
+              echo "health check OK"
               exit 0
             fi
+
             sleep 1
           done
+
           echo "container failed to become healthy"
           docker logs app
           exit 1
 
       - name: Show image size
         if: always()
-        run: docker image ls devops-nestjs-app:ci
+        run: |
+          docker image ls devops-nestjs-app:ci
 
       - name: Cleanup
         if: always()
-        run: docker rm -f app || true
+        run: |
+          docker rm -f app || true
 
+
+  # ============================================================
+  # PUSH IMAGE TO AMAZON ECR
+  # ============================================================
   push-to-ecr:
     name: push-to-ecr
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: docker
+
+    needs:
+      - docker
+
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
     env:
       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+
     permissions:
       contents: read
       id-token: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # --------------------------------------------------------
+      # Validate GitHub variables
+      # --------------------------------------------------------
       - name: Validate required AWS variables
         run: |
-          test -n "${{ vars.AWS_ROLE_ARN }}" || (echo "Missing repo variable: AWS_ROLE_ARN" && exit 1)
+          test -n "${{ vars.AWS_ROLE_ARN }}" \
+            || (echo "Missing repo variable: AWS_ROLE_ARN" && exit 1)
 
+          test -n "${{ vars.ECR_REPOSITORY }}" \
+            || (echo "Missing repo variable: ECR_REPOSITORY" && exit 1)
+
+
+      # --------------------------------------------------------
+      # Debug GitHub OIDC information
+      # --------------------------------------------------------
       - name: Debug OIDC claims
         run: |
-          echo "repo:         ${{ github.repository }}"
-          echo "ref:          ${{ github.ref }}"
-          echo "event:        ${{ github.event_name }}"
-          echo "role:         ${{ vars.AWS_ROLE_ARN }}"
-          echo "region:       ${{ env.AWS_REGION }}"
-          echo "expected sub: repo:${{ github.repository }}:ref:${{ github.ref }}"
+          echo "=========================================="
+          echo "        GitHub OIDC Debug Information"
+          echo "=========================================="
 
+          echo "repository:           ${{ github.repository }}"
+          echo "repository_owner:     ${{ github.repository_owner }}"
+          echo "repository_owner_id:  ${{ github.repository_owner_id }}"
+          echo "repository_id:        ${{ github.repository_id }}"
+          echo "ref:                   ${{ github.ref }}"
+          echo "event:                 ${{ github.event_name }}"
+          echo "workflow:              ${{ github.workflow }}"
+          echo "workflow_ref:         ${{ github.workflow_ref }}"
+          echo "role:                  ${{ vars.AWS_ROLE_ARN }}"
+          echo "region:                ${{ env.AWS_REGION }}"
+
+          echo ""
+          echo "Expected OIDC audience:"
+          echo "sts.amazonaws.com"
+
+          echo ""
+          echo "Expected OIDC subject:"
+          echo "repo:${{ github.repository_owner }}@${{ github.repository_owner_id }}/${{ github.event.repository.name }}@${{ github.repository_id }}:ref:${{ github.ref }}"
+
+          echo "=========================================="
+
+
+      # --------------------------------------------------------
+      # Get actual OIDC claims
+      # --------------------------------------------------------
+      - name: Debug actual OIDC claims
+        uses: github/actions-oidc-debugger@main
+        with:
+          audience: sts.amazonaws.com
+
+
+      # --------------------------------------------------------
+      # Authenticate to AWS using GitHub OIDC
+      # --------------------------------------------------------
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+
+      # --------------------------------------------------------
+      # Verify AWS authentication
+      # --------------------------------------------------------
+      - name: Verify AWS identity
+        run: |
+          echo "=========================================="
+          echo "             AWS Identity"
+          echo "=========================================="
+
+          aws sts get-caller-identity
+
+          echo "=========================================="
+
+
+      # --------------------------------------------------------
+      # Login to Amazon ECR
+      # --------------------------------------------------------
       - name: Login to Amazon ECR
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+
+      # --------------------------------------------------------
+      # Docker Buildx
+      # --------------------------------------------------------
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
+
+      # --------------------------------------------------------
+      # Build and push Docker image
+      # --------------------------------------------------------
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+
           tags: |
             ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
             ${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:latest
+
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+
+  # ============================================================
+  # DEPLOY TO ECS
+  # ============================================================
   deploy-to-ecs:
     name: deploy-to-ecs
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: push-to-ecr
+
+    needs:
+      - push-to-ecr
+
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
     env:
       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+
     permissions:
       contents: read
       id-token: write
+
     steps:
+
+      # --------------------------------------------------------
+      # Validate AWS role
+      # --------------------------------------------------------
       - name: Validate required AWS variables
         run: |
-          test -n "${{ vars.AWS_ROLE_ARN }}" || (echo "Missing repo variable: AWS_ROLE_ARN" && exit 1)
+          test -n "${{ vars.AWS_ROLE_ARN }}" \
+            || (echo "Missing repo variable: AWS_ROLE_ARN" && exit 1)
 
+
+      # --------------------------------------------------------
+      # Configure AWS credentials
+      # --------------------------------------------------------
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+
+      # --------------------------------------------------------
+      # Verify AWS authentication
+      # --------------------------------------------------------
+      - name: Verify AWS identity
+        run: |
+          echo "=========================================="
+          echo "             AWS Identity"
+          echo "=========================================="
+
+          aws sts get-caller-identity
+
+          echo "=========================================="
+
+
+      # --------------------------------------------------------
+      # Validate ECS variables
+      # --------------------------------------------------------
       - name: Validate required deployment variables
         run: |
-          test -n "${{ vars.ECS_CLUSTER }}" || (echo "Missing repo variable: ECS_CLUSTER" && exit 1)
-          test -n "${{ vars.ECS_SERVICE }}" || (echo "Missing repo variable: ECS_SERVICE" && exit 1)
+          test -n "${{ vars.ECS_CLUSTER }}" \
+            || (echo "Missing repo variable: ECS_CLUSTER" && exit 1)
 
+          test -n "${{ vars.ECS_SERVICE }}" \
+            || (echo "Missing repo variable: ECS_SERVICE" && exit 1)
+
+
+      # --------------------------------------------------------
+      # Force new ECS deployment
+      # --------------------------------------------------------
       - name: Force new ECS deployment
         run: |
           aws ecs update-service \
@@ -172,6 +318,10 @@ jobs:
             --service "${{ vars.ECS_SERVICE }}" \
             --force-new-deployment
 
+
+      # --------------------------------------------------------
+      # Wait for ECS service to become stable
+      # --------------------------------------------------------
       - name: Wait for ECS service stability
         run: |
           aws ecs wait services-stable \
