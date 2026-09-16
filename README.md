@@ -4,7 +4,7 @@ A production-style NestJS starter focused on CI/CD with GitHub Actions, Docker, 
 
 ## Overview
 
-This project includes:
+This project includes: 
 
 - NestJS API in TypeScript
 - Health endpoint for container/service checks: `/health`
