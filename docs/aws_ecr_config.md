@@ -6,7 +6,7 @@ This guide configures GitHub Actions OIDC + Amazon ECR push for `sunny-bhakta/de
 
 ```text
 AWS_ACCOUNT_ID=831975835566
-OWNER=sunny-bhakta
+OWNER=sunny-bhakta 
 REPO=devops
 AWS_REGION=ap-south-1
 
