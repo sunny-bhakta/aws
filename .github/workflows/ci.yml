@@ -1,3 +1,4 @@
+```yaml
 name: CI
 
 on:
@@ -69,8 +70,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # --------------------------------------------------------
-      # Temporary verification
-      # Make sure GitHub is using YOUR Dockerfile
+      # Verify Dockerfile
       # --------------------------------------------------------
       - name: Verify Dockerfile
         run: |
@@ -108,7 +108,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       # --------------------------------------------------------
-      # Run container
+      # Smoke test
       # --------------------------------------------------------
       - name: Smoke test the container
         run: |
@@ -142,7 +142,7 @@ jobs:
           exit 1
 
       # --------------------------------------------------------
-      # Show image information
+      # Show image size
       # --------------------------------------------------------
       - name: Show image size
         if: always()
@@ -207,10 +207,6 @@ jobs:
 
       # --------------------------------------------------------
       # OIDC DEBUG INFORMATION
-      #
-      # IMPORTANT:
-      # We are NOT using github/actions-oidc-debugger.
-      # That action is what was causing the Alpine/Go error.
       # --------------------------------------------------------
       - name: Debug OIDC claims
         run: |
@@ -284,7 +280,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # --------------------------------------------------------
-      # Verify Dockerfile again
+      # Verify Dockerfile
       # --------------------------------------------------------
       - name: Verify Dockerfile
         run: |
@@ -326,7 +322,7 @@ jobs:
   deploy-to-ecs:
     name: deploy-to-ecs
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     needs:
       - push-to-ecr
@@ -335,6 +331,9 @@ jobs:
 
     env:
       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+      ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+      ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+      ECS_SERVICE: ${{ vars.ECS_SERVICE }}
 
     permissions:
       contents: read
@@ -343,21 +342,9 @@ jobs:
     steps:
 
       # --------------------------------------------------------
-      # Validate AWS role
-      # --------------------------------------------------------
-      - name: Validate required AWS variables
-        run: |
-
-          test -n "${{ vars.AWS_ROLE_ARN }}" \
-            || (
-              echo "Missing repository variable: AWS_ROLE_ARN"
-              exit 1
-            )
-
-      # --------------------------------------------------------
       # AWS OIDC LOGIN
       # --------------------------------------------------------
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
@@ -380,25 +367,209 @@ jobs:
       # --------------------------------------------------------
       # Validate ECS variables
       # --------------------------------------------------------
-      - name: Validate required deployment variables
+      - name: Validate deployment variables
         run: |
 
-          test -n "${{ vars.ECS_CLUSTER }}" \
+          test -n "$ECS_CLUSTER" \
             || (
               echo "Missing repository variable: ECS_CLUSTER"
               exit 1
             )
 
-          test -n "${{ vars.ECS_SERVICE }}" \
+          test -n "$ECS_SERVICE" \
             || (
               echo "Missing repository variable: ECS_SERVICE"
               exit 1
             )
 
+          test -n "$ECR_REPOSITORY" \
+            || (
+              echo "Missing repository variable: ECR_REPOSITORY"
+              exit 1
+            )
+
       # --------------------------------------------------------
-      # Force ECS deployment
+      # Get AWS account ID
       # --------------------------------------------------------
-      - name: Force new ECS deployment
+      - name: Get AWS account ID
+        id: aws
+        run: |
+
+          ACCOUNT_ID=$(aws sts get-caller-identity \
+            --query Account \
+            --output text)
+
+          echo "AWS Account: $ACCOUNT_ID"
+
+          echo "account_id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------
+      # Get current ECS task definition dynamically
+      # --------------------------------------------------------
+      - name: Get current task definition
+        id: current-task
+        run: |
+
+          echo "=========================================="
+          echo "Finding current ECS task definition"
+          echo "=========================================="
+
+          TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          if [ -z "$TASK_DEFINITION" ] || [ "$TASK_DEFINITION" = "None" ]; then
+            echo "Could not find ECS task definition"
+            exit 1
+          fi
+
+          echo "Current task definition:"
+          echo "$TASK_DEFINITION"
+
+          echo "task_definition=$TASK_DEFINITION" >> "$GITHUB_OUTPUT"
+
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_DEFINITION" \
+            --query taskDefinition \
+            --output json > task-definition.json
+
+      # --------------------------------------------------------
+      # Show current containers
+      # --------------------------------------------------------
+      - name: Show current containers
+        run: |
+
+          echo "=========================================="
+          echo "Current ECS containers"
+          echo "=========================================="
+
+          jq -r '
+            .containerDefinitions[]
+            | "Container: \(.name) | Image: \(.image)"
+          ' task-definition.json
+
+      # --------------------------------------------------------
+      # Build new image URI
+      # --------------------------------------------------------
+      - name: Set new image
+        id: image
+        run: |
+
+          IMAGE_URI="${{ steps.aws.outputs.account_id }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${GITHUB_SHA}"
+
+          echo "=========================================="
+          echo "New Docker image"
+          echo "=========================================="
+
+          echo "$IMAGE_URI"
+
+          echo "image=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------
+      # Detect container dynamically
+      #
+      # We use the first container from the current
+      # ECS task definition.
+      # --------------------------------------------------------
+      - name: Detect container
+        id: container
+        run: |
+
+          CONTAINER_NAME=$(jq -r '
+            .containerDefinitions[0].name
+          ' task-definition.json)
+
+          if [ -z "$CONTAINER_NAME" ] || [ "$CONTAINER_NAME" = "null" ]; then
+            echo "Could not detect ECS container name"
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "Detected container"
+          echo "=========================================="
+
+          echo "$CONTAINER_NAME"
+
+          echo "container_name=$CONTAINER_NAME" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------
+      # Create new task definition
+      # --------------------------------------------------------
+      - name: Create new task definition
+        run: |
+
+          IMAGE="${{ steps.image.outputs.image }}"
+          CONTAINER="${{ steps.container.outputs.container_name }}"
+
+          echo "=========================================="
+          echo "Updating ECS task definition"
+          echo "=========================================="
+
+          echo "Container: $CONTAINER"
+          echo "New image: $IMAGE"
+
+          jq \
+            --arg IMAGE "$IMAGE" \
+            --arg CONTAINER "$CONTAINER" \
+            '
+            .containerDefinitions |= map(
+              if .name == $CONTAINER
+              then .image = $IMAGE
+              else .
+              end
+            )
+            |
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+            ' task-definition.json > new-task-definition.json
+
+          echo ""
+          echo "New task definition container images:"
+          
+          jq -r '
+            .containerDefinitions[]
+            | "Container: \(.name) | Image: \(.image)"
+          ' new-task-definition.json
+
+      # --------------------------------------------------------
+      # Register new ECS task definition revision
+      # --------------------------------------------------------
+      - name: Register new task definition
+        id: register
+        run: |
+
+          echo "=========================================="
+          echo "Registering new ECS task definition"
+          echo "=========================================="
+
+          NEW_TASK_DEFINITION=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-definition.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+
+          if [ -z "$NEW_TASK_DEFINITION" ] || [ "$NEW_TASK_DEFINITION" = "None" ]; then
+            echo "Failed to register new task definition"
+            exit 1
+          fi
+
+          echo "New task definition:"
+          echo "$NEW_TASK_DEFINITION"
+
+          echo "task_definition=$NEW_TASK_DEFINITION" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------
+      # Update ECS service
+      # --------------------------------------------------------
+      - name: Deploy new task definition
         run: |
 
           echo "=========================================="
@@ -406,12 +577,12 @@ jobs:
           echo "=========================================="
 
           aws ecs update-service \
-            --cluster "${{ vars.ECS_CLUSTER }}" \
-            --service "${{ vars.ECS_SERVICE }}" \
-            --force-new-deployment
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.register.outputs.task_definition }}"
 
       # --------------------------------------------------------
-      # Wait for ECS
+      # Wait for ECS deployment
       # --------------------------------------------------------
       - name: Wait for ECS service stability
         run: |
@@ -421,9 +592,34 @@ jobs:
           echo "=========================================="
 
           aws ecs wait services-stable \
-            --cluster "${{ vars.ECS_CLUSTER }}" \
-            --services "${{ vars.ECS_SERVICE }}"
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE"
 
           echo "=========================================="
           echo "ECS deployment completed successfully"
           echo "=========================================="
+
+      # --------------------------------------------------------
+      # Show final ECS task definition
+      # --------------------------------------------------------
+      - name: Show deployed image
+        run: |
+
+          echo "=========================================="
+          echo "Deployed ECS task"
+          echo "=========================================="
+
+          FINAL_TASK_DEFINITION=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services "$ECS_SERVICE" \
+            --query 'services[0].taskDefinition' \
+            --output text)
+
+          echo "Task definition:"
+          echo "$FINAL_TASK_DEFINITION"
+
+          aws ecs describe-task-definition \
+            --task-definition "$FINAL_TASK_DEFINITION" \
+            --query 'taskDefinition.containerDefinitions[].{Container:name,Image:image}' \
+            --output table
+```
