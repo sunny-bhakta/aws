@@ -1,4 +1,3 @@
-```yaml
 name: CI
 
 on:
@@ -622,4 +621,3 @@ jobs:
             --task-definition "$FINAL_TASK_DEFINITION" \
             --query 'taskDefinition.containerDefinitions[].{Container:name,Image:image}' \
             --output table
-```
