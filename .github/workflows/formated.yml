@@ -1,0 +1,654 @@
+# name: CI
+
+# on:
+#   pull_request:
+#   push:
+#     branches:
+#       - main
+#   workflow_dispatch:
+
+# concurrency:
+#   group: ${{ github.workflow }}-${{ github.ref }}
+#   cancel-in-progress: true
+
+# permissions:
+#   contents: read
+#   id-token: write
+
+
+# # ============================================================
+# # JOB 1
+# # BUILD & TEST
+# # ============================================================
+# jobs:
+
+#   build-and-test:
+#     name: 1. Build & Test
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 10
+
+#     steps:
+
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: '22'
+#           cache: npm
+
+#       - name: Install dependencies
+#         run: npm ci
+
+#       - name: Run lint
+#         run: npm run lint
+
+#       - name: Run build
+#         run: npm run build
+
+#       - name: Run unit tests
+#         run: npm test
+
+
+#   # ============================================================
+#   # JOB 2
+#   # DOCKER BUILD & SMOKE TEST
+#   # ============================================================
+
+#   docker-build:
+#     name: 2. Docker Build & Smoke Test
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 10
+
+#     needs:
+#       - build-and-test
+
+#     steps:
+
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Set up Docker Buildx
+#         uses: docker/setup-buildx-action@v3
+
+#       - name: Build Docker image
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           file: ./Dockerfile
+#           push: false
+#           load: true
+#           tags: devops-nestjs-app:ci
+
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#       - name: Run container
+#         run: |
+#           docker run -d \
+#             --name app \
+#             -p 3000:3000 \
+#             devops-nestjs-app:ci
+
+#       - name: Smoke test
+#         run: |
+
+#           echo "Waiting for application..."
+
+#           for i in $(seq 1 30); do
+
+#             if curl -fsS http://localhost:3000/health; then
+
+#               echo ""
+#               echo "=========================================="
+#               echo "Docker smoke test PASSED"
+#               echo "=========================================="
+
+#               exit 0
+#             fi
+
+#             sleep 1
+
+#           done
+
+#           echo "=========================================="
+#           echo "Docker smoke test FAILED"
+#           echo "=========================================="
+
+#           docker logs app
+
+#           exit 1
+
+#       - name: Cleanup
+#         if: always()
+#         run: |
+#           docker rm -f app || true
+
+
+#   # ============================================================
+#   # JOB 3
+#   # PUSH IMAGE TO ECR
+#   # ============================================================
+
+#   push-to-ecr:
+#     name: 3. Push Image to ECR
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 15
+
+#     needs:
+#       - docker-build
+
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+#     env:
+#       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+#       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+
+#     permissions:
+#       contents: read
+#       id-token: write
+
+#     steps:
+
+#       - name: Checkout
+#         uses: actions/checkout@v4
+
+#       - name: Validate AWS variables
+#         run: |
+
+#           test -n "${{ vars.AWS_ROLE_ARN }}" || {
+#             echo "Missing AWS_ROLE_ARN"
+#             exit 1
+#           }
+
+#           test -n "$ECR_REPOSITORY" || {
+#             echo "Missing ECR_REPOSITORY"
+#             exit 1
+#           }
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Verify AWS identity
+#         run: |
+#           aws sts get-caller-identity
+
+#       - name: Login to ECR
+#         id: ecr-login
+#         uses: aws-actions/amazon-ecr-login@v2
+
+#       - name: Build and push image
+#         uses: docker/build-push-action@v6
+#         with:
+#           context: .
+#           file: ./Dockerfile
+#           push: true
+
+#           tags: |
+#             ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
+#           cache-from: type=gha
+#           cache-to: type=gha,mode=max
+
+#       - name: Verify image
+#         run: |
+
+#           IMAGE_URI="${{ steps.ecr-login.outputs.registry }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+
+#           echo "=========================================="
+#           echo "ECR IMAGE"
+#           echo "=========================================="
+
+#           echo "$IMAGE_URI"
+
+#           aws ecr describe-images \
+#             --repository-name "$ECR_REPOSITORY" \
+#             --image-ids imageTag="$GITHUB_SHA"
+
+
+#   # ============================================================
+#   # JOB 4
+#   # PREPARE ECS TASK DEFINITION
+#   # ============================================================
+
+#   prepare-ecs:
+#     name: 4. Prepare ECS Task Definition
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 10
+
+#     needs:
+#       - push-to-ecr
+
+#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+#     env:
+#       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+#       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+#       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+#       ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+
+#     permissions:
+#       contents: read
+#       id-token: write
+
+#     steps:
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Get AWS account ID
+#         id: aws
+#         run: |
+
+#           ACCOUNT_ID=$(aws sts get-caller-identity \
+#             --query Account \
+#             --output text)
+
+#           echo "account_id=$ACCOUNT_ID" >> "$GITHUB_OUTPUT"
+
+#       # --------------------------------------------------------
+#       # Find current task definition
+#       # --------------------------------------------------------
+
+#       - name: Get current task definition
+#         run: |
+
+#           TASK_DEFINITION=$(aws ecs describe-services \
+#             --cluster "$ECS_CLUSTER" \
+#             --services "$ECS_SERVICE" \
+#             --query 'services[0].taskDefinition' \
+#             --output text)
+
+#           if [ -z "$TASK_DEFINITION" ] || [ "$TASK_DEFINITION" = "None" ]; then
+#             echo "Could not find ECS task definition"
+#             exit 1
+#           fi
+
+#           echo "Current task definition:"
+#           echo "$TASK_DEFINITION"
+
+#           aws ecs describe-task-definition \
+#             --task-definition "$TASK_DEFINITION" \
+#             --query taskDefinition \
+#             --output json > task-definition.json
+
+#       # --------------------------------------------------------
+#       # Find container dynamically
+#       # --------------------------------------------------------
+
+#       - name: Find application container
+#         id: container
+#         run: |
+
+#           CONTAINER_NAME=$(jq -r \
+#             --arg REPOSITORY "$ECR_REPOSITORY" '
+#               .containerDefinitions[]
+#               | select(.image | contains($REPOSITORY))
+#               | .name
+#             ' task-definition.json | head -n 1)
+
+#           if [ -z "$CONTAINER_NAME" ]; then
+
+#             echo "Could not automatically find application container."
+
+#             echo ""
+#             echo "Available containers:"
+
+#             jq -r '
+#               .containerDefinitions[]
+#               | "\(.name) -> \(.image)"
+#             ' task-definition.json
+
+#             exit 1
+#           fi
+
+#           echo "Application container:"
+#           echo "$CONTAINER_NAME"
+
+#           echo "container_name=$CONTAINER_NAME" >> "$GITHUB_OUTPUT"
+
+#       # --------------------------------------------------------
+#       # Create new image URI
+#       # --------------------------------------------------------
+
+#       - name: Create image URI
+#         id: image
+#         run: |
+
+#           IMAGE_URI="${{ steps.aws.outputs.account_id }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${GITHUB_SHA}"
+
+#           echo "Image:"
+#           echo "$IMAGE_URI"
+
+#           echo "image=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+#       # --------------------------------------------------------
+#       # Update task definition
+#       # --------------------------------------------------------
+
+#       - name: Create new task definition
+#         run: |
+
+#           IMAGE="${{ steps.image.outputs.image }}"
+#           CONTAINER="${{ steps.container.outputs.container_name }}"
+
+#           jq \
+#             --arg IMAGE "$IMAGE" \
+#             --arg CONTAINER "$CONTAINER" '
+#               .containerDefinitions |= map(
+#                 if .name == $CONTAINER
+#                 then .image = $IMAGE
+#                 else .
+#                 end
+#               )
+#               |
+#               del(
+#                 .taskDefinitionArn,
+#                 .revision,
+#                 .status,
+#                 .requiresAttributes,
+#                 .compatibilities,
+#                 .registeredAt,
+#                 .registeredBy
+#               )
+#             ' task-definition.json > new-task-definition.json
+
+#           echo "=========================================="
+#           echo "NEW TASK DEFINITION"
+#           echo "=========================================="
+
+#           jq -r '
+#             .containerDefinitions[]
+#             | "\(.name) -> \(.image)"
+#           ' new-task-definition.json
+
+#       # --------------------------------------------------------
+#       # Register task definition
+#       # --------------------------------------------------------
+
+#       - name: Register task definition
+#         id: register
+#         run: |
+
+#           NEW_TASK_DEFINITION=$(aws ecs register-task-definition \
+#             --cli-input-json file://new-task-definition.json \
+#             --query 'taskDefinition.taskDefinitionArn' \
+#             --output text)
+
+#           if [ -z "$NEW_TASK_DEFINITION" ]; then
+#             echo "Failed to register task definition"
+#             exit 1
+#           fi
+
+#           echo "New task definition:"
+#           echo "$NEW_TASK_DEFINITION"
+
+#           echo "task_definition=$NEW_TASK_DEFINITION" >> "$GITHUB_OUTPUT"
+
+#       # --------------------------------------------------------
+#       # Upload task definition for next job
+#       # --------------------------------------------------------
+
+#       - name: Save task definition
+#         run: |
+
+#           echo "${{ steps.register.outputs.task_definition }}" \
+#             > task-definition-arn.txt
+
+#       - name: Upload task definition artifact
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: ecs-task-definition
+#           path: task-definition-arn.txt
+
+
+#   # ============================================================
+#   # JOB 5
+#   # DEPLOY TO ECS
+#   # ============================================================
+
+#   deploy-ecs:
+#     name: 5. Deploy to ECS
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 10
+
+#     needs:
+#       - prepare-ecs
+
+#     env:
+#       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+#       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+#       ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+
+#     permissions:
+#       contents: read
+#       id-token: write
+
+#     steps:
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Download task definition
+#         uses: actions/download-artifact@v4
+#         with:
+#           name: ecs-task-definition
+
+#       - name: Deploy task definition
+#         run: |
+
+#           TASK_DEFINITION=$(cat task-definition-arn.txt)
+
+#           echo "=========================================="
+#           echo "DEPLOYING"
+#           echo "=========================================="
+
+#           echo "Task definition:"
+#           echo "$TASK_DEFINITION"
+
+#           aws ecs update-service \
+#             --cluster "$ECS_CLUSTER" \
+#             --service "$ECS_SERVICE" \
+#             --task-definition "$TASK_DEFINITION"
+
+#           echo "ECS deployment started."
+
+
+#   # ============================================================
+#   # JOB 6
+#   # VERIFY DEPLOYMENT
+#   # ============================================================
+
+#   verify-deployment:
+#     name: 6. Verify Deployment
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 15
+
+#     needs:
+#       - deploy-ecs
+
+#     env:
+#       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+#       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+#       ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+
+#     permissions:
+#       contents: read
+#       id-token: write
+
+#     steps:
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       - name: Wait for ECS stability
+#         run: |
+
+#           echo "=========================================="
+#           echo "WAITING FOR ECS"
+#           echo "=========================================="
+
+#           aws ecs wait services-stable \
+#             --cluster "$ECS_CLUSTER" \
+#             --services "$ECS_SERVICE"
+
+#           echo "=========================================="
+#           echo "ECS SERVICE IS STABLE"
+#           echo "=========================================="
+
+#       - name: Check running tasks
+#         run: |
+
+#           echo "=========================================="
+#           echo "RUNNING TASKS"
+#           echo "=========================================="
+
+#           aws ecs describe-services \
+#             --cluster "$ECS_CLUSTER" \
+#             --services "$ECS_SERVICE" \
+#             --query 'services[0].{Desired:desiredCount,Running:runningCount,Pending:pendingCount,Status:status}' \
+#             --output table
+
+#       - name: Verify deployment image
+#         run: |
+
+#           TASK_DEFINITION=$(aws ecs describe-services \
+#             --cluster "$ECS_CLUSTER" \
+#             --services "$ECS_SERVICE" \
+#             --query 'services[0].taskDefinition' \
+#             --output text)
+
+#           echo "Running task definition:"
+#           echo "$TASK_DEFINITION"
+
+#           aws ecs describe-task-definition \
+#             --task-definition "$TASK_DEFINITION" \
+#             --query 'taskDefinition.containerDefinitions[].{Container:name,Image:image}' \
+#             --output table
+
+
+#   # ============================================================
+#   # JOB 7
+#   # GET APPLICATION URL
+#   # ============================================================
+
+#   get-application-url:
+#     name: 7. Get Application URL
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 5
+
+#     needs:
+#       - verify-deployment
+
+#     env:
+#       AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+#       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+#       ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+
+#     permissions:
+#       contents: read
+#       id-token: write
+
+#     steps:
+
+#       - name: Configure AWS credentials
+#         uses: aws-actions/configure-aws-credentials@v4
+#         with:
+#           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+#           aws-region: ${{ env.AWS_REGION }}
+
+#       # --------------------------------------------------------
+#       # Find ALB attached to ECS service
+#       # --------------------------------------------------------
+
+#       - name: Get Load Balancer
+#         id: alb
+#         run: |
+
+#           LOAD_BALANCER_ARN=$(aws ecs describe-services \
+#             --cluster "$ECS_CLUSTER" \
+#             --services "$ECS_SERVICE" \
+#             --query 'services[0].loadBalancers[0].targetGroupArn' \
+#             --output text)
+
+#           if [ -z "$LOAD_BALANCER_ARN" ] || [ "$LOAD_BALANCER_ARN" = "None" ]; then
+
+#             echo "No load balancer is attached to the ECS service."
+
+#             exit 1
+#           fi
+
+#           echo "Target group:"
+#           echo "$LOAD_BALANCER_ARN"
+
+#           LOAD_BALANCER=$(aws elbv2 describe-target-groups \
+#             --target-group-arns "$LOAD_BALANCER_ARN" \
+#             --query 'TargetGroups[0].LoadBalancerArns[0]' \
+#             --output text)
+
+#           if [ -z "$LOAD_BALANCER" ] || [ "$LOAD_BALANCER" = "None" ]; then
+
+#             echo "Could not find load balancer."
+
+#             exit 1
+#           fi
+
+#           echo "Load balancer:"
+#           echo "$LOAD_BALANCER"
+
+#           echo "load_balancer=$LOAD_BALANCER" >> "$GITHUB_OUTPUT"
+
+#       # --------------------------------------------------------
+#       # Get ALB DNS name
+#       # --------------------------------------------------------
+
+#       - name: Get Application URL
+#         run: |
+
+#           DNS_NAME=$(aws elbv2 describe-load-balancers \
+#             --load-balancer-arns "${{ steps.alb.outputs.load_balancer }}" \
+#             --query 'LoadBalancers[0].DNSName' \
+#             --output text)
+
+#           SCHEME=$(aws elbv2 describe-load-balancers \
+#             --load-balancer-arns "${{ steps.alb.outputs.load_balancer }}" \
+#             --query 'LoadBalancers[0].Scheme' \
+#             --output text)
+
+#           echo ""
+#           echo "=========================================="
+#           echo "        DEPLOYMENT SUCCESSFUL"
+#           echo "=========================================="
+
+#           echo ""
+#           echo "Load Balancer Scheme:"
+#           echo "$SCHEME"
+
+#           echo ""
+#           echo "Application URL:"
+#           echo "http://$DNS_NAME"
+
+#           echo ""
+#           echo "=========================================="
+
+#           if [ "$SCHEME" = "internal" ]; then
+#             echo ""
+#             echo "WARNING:"
+#             echo "This is an INTERNAL load balancer."
+#             echo "The URL is only accessible from inside the VPC"
+#             echo "or through an appropriate private connection."
+#             echo ""
+#           fi
