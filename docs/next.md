@@ -507,6 +507,84 @@ Add:
 * Automatic rollback concepts
 * Environment separation
 
+## Add DevSecOps Scanning (Windows + Linux)
+
+To make CI/CD consulting-ready, add a dedicated **DevSecOps security stage**.
+
+### Security/quality tools to include
+
+* **GitHub Advanced Security / CodeQL** (SAST code scanning)
+* **Snyk** (SCA dependency + container + IaC scan)
+* **GitGuardian** (secrets detection)
+* **SonarQube / SonarCloud** (code quality + security hotspots)
+* **CAST Highlight** (software risk + architecture/technical debt insights)
+* **Copilot error analysis** (faster triage and fix suggestions for CI failures)
+
+### Windows scan support
+
+Keep at least one security job runnable on:
+
+* `ubuntu-latest` (primary CI)
+* `windows-latest` (Windows compatibility/security validation)
+
+This helps catch OS-specific dependency and tooling issues before release.
+
+### Recommended CI/CD security gates
+
+Use these as policy gates before deployment:
+
+1. Secret scan must pass (GitGuardian / secret scanning)
+2. SAST must pass (CodeQL/Sonar) with no new critical issues
+3. Dependency scan must pass (Snyk) with no critical vulns
+4. Container image scan must pass (Snyk/Trivy) before ECR push
+5. IaC scan must pass (`terraform/` checks) before `terraform apply`
+
+### Minimal rollout plan
+
+Phase 1 (quick win):
+
+* Add GitGuardian + Snyk dependency scan + CodeQL
+
+Phase 2:
+
+* Add Sonar analysis and quality gate
+* Add container scan and Terraform IaC scan
+
+Phase 3:
+
+* Add CAST Highlight monthly trend reporting
+* Add Copilot-based error triage workflow for failed pipelines
+
+### Example enhanced pipeline flow
+
+```text
+Git Push
+   ↓
+Build + Unit Test + Lint
+   ↓
+Secret Scan (GitGuardian)
+   ↓
+SAST (CodeQL / Sonar)
+   ↓
+SCA + Container + IaC Scan (Snyk)
+   ↓
+Docker Build
+   ↓
+ECR Push (only if gates pass)
+   ↓
+ECS Deploy
+   ↓
+Post-deploy health verification
+```
+
+### Operational note
+
+Treat findings by severity:
+
+* **Critical/High**: block deployment
+* **Medium**: allow with tracked ticket + SLA
+* **Low**: backlog and fix in regular hardening sprints
+
 Use image tags such as:
 
 ```text
