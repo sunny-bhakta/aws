@@ -172,7 +172,7 @@ jobs:
     needs:
       - docker
 
-  if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
 
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
@@ -326,7 +326,7 @@ jobs:
     needs:
       - push-to-ecr
 
-  if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
 
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
