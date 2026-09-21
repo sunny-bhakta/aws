@@ -29,23 +29,29 @@ resource "aws_iam_role" "ecs_task" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  github_oidc_provider_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
+  github_oidc_provider_arn            = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
   console_ecs_task_execution_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/ecsTaskExecutionRole"
 
-  github_sub_plain = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/${var.github_branch}"
+  github_sub_plain_exact = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/${var.github_branch}"
+  github_sub_plain_any   = "repo:${var.github_owner}/${var.github_repo}:*"
 
-  github_sub_ids_wildcard = "repo:${var.github_owner}@*/${var.github_repo}@*:ref:refs/heads/${var.github_branch}"
-
-  github_sub_with_ids = (
+  github_sub_with_ids_exact = (
     var.github_owner_id != "" && var.github_repo_id != ""
     ? "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}:ref:refs/heads/${var.github_branch}"
     : ""
   )
 
+  github_sub_with_ids_any = (
+    var.github_owner_id != "" && var.github_repo_id != ""
+    ? "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}:*"
+    : ""
+  )
+
   github_sub_claims = compact([
-    local.github_sub_plain,
-    local.github_sub_ids_wildcard,
-    local.github_sub_with_ids,
+    local.github_sub_plain_exact,
+    local.github_sub_plain_any,
+    local.github_sub_with_ids_exact,
+    local.github_sub_with_ids_any,
   ])
 }
 
@@ -100,7 +106,7 @@ data "aws_iam_policy_document" "github_actions_ecr" {
       "ecr:UploadLayerPart",
     ]
 
-    resources = [aws_ecr_repository.app.arn]
+    resources = ["arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/${var.ecr_repository_name}"]
   }
 }
 

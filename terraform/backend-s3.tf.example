@@ -1,0 +1,6 @@
+# Copy this file to backend.tf when you are ready to move to remote state.
+# Do NOT commit real backend values if they are environment-specific.
+
+terraform {
+  backend "s3" {}
+}

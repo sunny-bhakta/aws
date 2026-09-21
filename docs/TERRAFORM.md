@@ -2286,6 +2286,7 @@ Repeatable AWS infrastructure
 
 - [ ] Modules
 - [ ] Environment separation
+- [ ] S3 backend for Terraform state
 - [ ] Remote state
 - [ ] State locking
 - [ ] CI/CD
@@ -2341,4 +2342,166 @@ Plan
 ```
 
 After that, we will progressively Terraform your **actual ECR → VPC → ALB → ECS Fargate → CloudWatch → RDS → Secrets** architecture.
+
+---
+
+# 46. Terraform File Order Reference (Current Project)
+
+Use this as a quick map for both learning and troubleshooting. Terraform executes by dependency graph, but this order is best for understanding.
+
+## 46.1 Ordered walkthrough
+
+1. `provider.tf`
+   - Pins Terraform and provider versions (`aws`, `random`)
+   - Configures AWS region/profile
+
+2. `variables.tf`
+   - Central input contract (naming, ECS sizing, RDS/secrets toggles, GitHub OIDC values)
+
+3. `vpc.tf`
+   - Reads default VPC and default subnets using data sources
+
+4. `security-groups.tf`
+   - Defines ALB and ECS security groups
+   - Allows Internet → ALB (80) and ALB → ECS (app port)
+
+5. `ecr.tf`
+   - Creates ECR repository for container images
+
+6. `iam.tf`
+   - Creates ECS execution/task roles
+   - Creates GitHub Actions OIDC role and policies for ECR push + ECS deploy
+
+7. `cloudwatch.tf`
+   - Creates log group used by ECS task logs
+
+8. `alb.tf`
+   - Creates ALB, target group, and HTTP listener
+   - Health check path: `/health`
+
+9. `ecs.tf`
+   - Creates ECS cluster, task definition, and Fargate service
+   - Connects service to ALB target group
+
+10. `rds.tf` (optional)
+    - Created only when `enable_rds = true`
+    - Creates DB SG, subnet group, random password, and PostgreSQL instance
+
+11. `secrets.tf` (optional)
+    - Created only when `enable_secrets = true`
+    - Stores DB config in Secrets Manager
+
+12. `outputs.tf`
+    - Exposes key values (ECR URL, ALB DNS, ECS names, log group, optional RDS/secret values)
+
+## 46.2 Important dependency notes
+
+- `hashicorp/random` is required because `rds.tf` uses `random_password.db`.
+- `ecs.tf` depends on resources from `ecr.tf`, `iam.tf`, `cloudwatch.tf`, `security-groups.tf`, and `alb.tf`.
+- `secrets.tf` can consume values from both `rds.tf` and variable overrides.
+- File names do not force runtime order; resource references do.
+
+## 46.3 Practical apply strategy
+
+- Start with core app path:
+  `provider.tf` → `variables.tf` → `vpc.tf` → `security-groups.tf` → `ecr.tf` → `iam.tf` → `cloudwatch.tf` → `alb.tf` → `ecs.tf`
+- Enable optional layers later:
+  `rds.tf` and then `secrets.tf`
+- Use `outputs.tf` to verify what was created and to feed CI/CD.
+
+## 46.4 File dependency matrix (quick debug view)
+
+| File | Depends on | Creates / Defines |
+|---|---|---|
+| `provider.tf` | `variables.tf` (`aws_region`, `aws_profile`) | Terraform/provider requirements and AWS provider config |
+| `variables.tf` | None | Input variable contract |
+| `vpc.tf` | Provider only | `data.aws_vpc.default`, `data.aws_subnets.default` |
+| `security-groups.tf` | `vpc.tf`, `variables.tf` | `aws_security_group.alb`, `aws_security_group.ecs` |
+| `ecr.tf` | `variables.tf` | `aws_ecr_repository.app` |
+| `iam.tf` | `ecr.tf`, `variables.tf` | ECS task roles, GitHub OIDC role, ECR/ECS deploy policies |
+| `cloudwatch.tf` | `variables.tf` | `aws_cloudwatch_log_group.app` |
+| `alb.tf` | `vpc.tf`, `security-groups.tf`, `variables.tf` | `aws_lb.app`, `aws_lb_target_group.app`, `aws_lb_listener.http` |
+| `ecs.tf` | `ecr.tf`, `iam.tf`, `cloudwatch.tf`, `security-groups.tf`, `alb.tf`, `vpc.tf`, `variables.tf` | `aws_ecs_cluster.app`, `aws_ecs_task_definition.app`, `aws_ecs_service.app` |
+| `rds.tf` (optional) | `vpc.tf`, `security-groups.tf`, `variables.tf`, `provider.tf` (`random`) | RDS SG, DB subnet group, `random_password.db`, `aws_db_instance.postgres` |
+| `secrets.tf` (optional) | `variables.tf`, and optionally `rds.tf` | DB locals, `aws_secretsmanager_secret.db`, `aws_secretsmanager_secret_version.db` |
+| `outputs.tf` | Most resource files | Exported values for CI, verification, and integrations |
+
+### Reading this table correctly
+
+- “Depends on” means **logical reference dependency** in Terraform graph.
+- Terraform still resolves final apply order automatically from references.
+- Optional files participate only when their toggle variables are enabled.
+
+## 46.5 Auth modes (Local vs GitHub Actions)
+
+This project uses two different authentication paths. Keep them separate.
+
+### Local Terraform (your machine)
+
+- Uses AWS CLI profile via provider config:
+   - `provider "aws" { profile = var.aws_profile }`
+- Default local profile in this project:
+   - `aws_profile = "devops-local"`
+- Use this mode for:
+   - `terraform init`, `terraform plan`, `terraform apply`, `terraform destroy` run from local terminal.
+
+### GitHub Actions deploy (CI/CD)
+
+- Uses OIDC web identity assumption (no long-lived AWS keys in GitHub).
+- Trust policy is defined in `iam.tf` (`github_actions_assume_role`).
+- ECR push and ECS deploy permissions are attached to `aws_iam_role.github_actions`.
+
+### Important rule
+
+- **Local Terraform does not use OIDC**.
+- **GitHub Actions does not use your local `devops-local` profile**.
+
+### Quick troubleshooting hint
+
+If you see:
+
+`Could not assume role with OIDC`
+
+then the issue is in GitHub OIDC trust/configuration (role ARN, provider, `aud`/`sub` claims), not in local Terraform profile authentication.
+
+## 46.6 GitHub Actions Terraform implementation (no local Terraform required)
+
+This repository includes a dedicated workflow:
+
+- `.github/workflows/terraform.yml`
+
+It supports:
+
+- Pull request / push validation (`fmt` + `validate`)
+- Manual Terraform actions (`plan`, `apply`, `destroy`) using `workflow_dispatch`
+
+### Required GitHub repository variables
+
+Set these in **GitHub → Settings → Secrets and variables → Actions → Variables**:
+
+- `AWS_ROLE_ARN` = IAM role to assume via OIDC
+- `AWS_REGION` = `ap-south-1` (or your target region)
+- `TF_STATE_BUCKET` = S3 bucket name for Terraform state
+- `TF_STATE_KEY` = state object key (example: `aws/devops-nestjs/terraform.tfstate`)
+- `TF_STATE_LOCK_TABLE` = optional DynamoDB table for state locking
+
+### How to run
+
+1. Open **Actions** tab in GitHub.
+2. Select workflow **Terraform**.
+3. Click **Run workflow**.
+4. Choose action:
+    - `plan`
+    - `apply`
+    - `destroy`
+5. Run and review logs.
+
+### CI authentication behavior
+
+- Workflow uses OIDC role assumption (`aws-actions/configure-aws-credentials`).
+- Terraform in CI passes `aws_profile=""` intentionally.
+- AWS provider config supports this by using:
+   - `profile = var.aws_profile != "" ? var.aws_profile : null`
+
+This keeps local profile auth and GitHub OIDC auth both working cleanly.
 

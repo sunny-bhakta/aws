@@ -35,9 +35,9 @@ variable "container_port" {
 }
 
 variable "container_image_tag" {
-  description = "Image tag deployed by ECS service"
+  description = "Immutable image tag deployed by ECS service (for example a Git SHA)"
   type        = string
-  default     = "latest"
+  default     = "bootstrap"
 }
 
 variable "ecs_cluster_name" {
@@ -112,6 +112,18 @@ variable "db_allocated_storage" {
   default     = 20
 }
 
+variable "db_skip_final_snapshot" {
+  description = "Skip final snapshot on RDS deletion (set false for safer environments)"
+  type        = bool
+  default     = true
+}
+
+variable "db_deletion_protection" {
+  description = "Enable RDS deletion protection"
+  type        = bool
+  default     = false
+}
+
 variable "enable_secrets" {
   description = "Create Secrets Manager secret for database config"
   type        = bool
@@ -158,13 +170,13 @@ variable "github_branch" {
 variable "github_owner_id" {
   description = "Optional GitHub owner numeric id for subject format with ids"
   type        = string
-  default     = ""
+  default     = "77013204"
 }
 
 variable "github_repo_id" {
   description = "Optional GitHub repository numeric id for subject format with ids"
   type        = string
-  default     = ""
+  default     = "1361501698"
 }
 
 variable "github_actions_role_name" {
