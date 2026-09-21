@@ -513,6 +513,9 @@ To make CI/CD consulting-ready, add a dedicated **DevSecOps security stage**.
 
 ### Security/quality tools to include
 
+* **Wiz CLI / Wiz Scanner** (cloud security posture, IaC misconfiguration checks, container image vulnerability scanning)
+* **Vulnerability scanning gate**: fail CI on **Critical/High** findings from Wiz (or approved exceptions), and require ticket + SLA for **Medium**
+* **Wiz coverage scope**: scan application dependencies, container images, and Terraform/IaC before deploy
 * **GitHub Advanced Security / CodeQL** (SAST code scanning)
 * **Snyk** (SCA dependency + container + IaC scan)
 * **GitGuardian** (secrets detection)
