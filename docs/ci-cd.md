@@ -537,6 +537,37 @@ Having `ecsTaskExecutionRole` in IAM is not sufficient. The GitHub Actions role 
 
 ---
 
+## S3
+```
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "StateBucketList",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket"],
+      "Resource": "arn:aws:s3:::devops-nestjs-tf-state-831975835566",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "aws/devops-nestjs/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "StateObjectAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::devops-nestjs-tf-state-831975835566/aws/devops-nestjs/*"
+    }
+  ]
+}
+```
 # 9. ECS Task Execution Role
 
 Go to:
@@ -1639,18 +1670,6 @@ If the policy is currently scoped to a specific ECS service ARN and this error s
 ```
 
 Keep write access (`ecs:UpdateService`) scoped to your service ARN.
-
-Example service ARN path for this project:
-
-```text
-arn:aws:ecs:ap-south-1:831975835566:service/devops-cluster/devops-nestjs-service
-```
-
-If you also scope cluster reads, use:
-
-```text
-arn:aws:ecs:ap-south-1:831975835566:cluster/devops-cluster
-```
 
 3. IAM changes were actually applied (not only validated in Terraform).
 

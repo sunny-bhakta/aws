@@ -2289,8 +2289,10 @@ Repeatable AWS infrastructure
 - [ ] S3 backend for Terraform state
 - [ ] Remote state
 - [ ] State locking
+- [ ] DynamoDB lock table integration (deferred)
 - [ ] CI/CD
 - [ ] GitHub Actions
+- [ ] Bitbucket pipeline integration (deferred)
 - [ ] Terraform security
 - [ ] Terraform testing
 
@@ -2504,4 +2506,78 @@ Set these in **GitHub → Settings → Secrets and variables → Actions → Var
    - `profile = var.aws_profile != "" ? var.aws_profile : null`
 
 This keeps local profile auth and GitHub OIDC auth both working cleanly.
+
+## 46.7 Remote state setup checklist (S3)
+
+Use this checklist when enabling Terraform remote state for GitHub Actions.
+
+### S3 bucket choices
+
+- Bucket type: **General purpose** (recommended for Terraform state)
+- Do **not** use: directory bucket (S3 Express One Zone)
+- Bucket name must be globally unique (S3 global namespace)
+   - Example: `devops-nestjs-tf-state-831975835566`
+
+### S3 bucket security settings
+
+- Block public access: **ON**
+- Versioning: **ON**
+- Encryption: **SSE-S3 (AES-256)**
+- Bucket Key: not required for SSE-S3 (used mainly with SSE-KMS)
+
+### Optional state locking
+
+Create DynamoDB table for lock management:
+
+- Table name example: `terraform-locks`
+- Partition key: `LockID` (String)
+
+### Required GitHub variables for backend
+
+Set in **Settings → Secrets and variables → Actions → Variables**:
+
+- `TF_STATE_BUCKET` = S3 bucket name
+- `TF_STATE_KEY` = state key path (example: `aws/devops-nestjs/terraform.tfstate`)
+- `TF_STATE_LOCK_TABLE` = lock table name (optional, recommended)
+
+### Step 3: IAM permissions for backend access
+
+Attach these permissions to the IAM role used by `AWS_ROLE_ARN`.
+
+S3 permissions (state bucket):
+ut
+- `s3:ListBucket` on bucket ARN
+   - `arn:aws:s3:::<TF_STATE_BUCKET>`
+- `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject` on state object path
+   - `arn:aws:s3:::<TF_STATE_BUCKET>/<TF_STATE_KEY>`
+
+DynamoDB permissions (lock table, if enabled):
+
+- `dynamodb:DescribeTable`
+- `dynamodb:GetItem`
+- `dynamodb:PutItem`
+- `dynamodb:UpdateItem`
+- `dynamodb:DeleteItem`
+
+Resource ARN format:
+
+- `arn:aws:dynamodb:<AWS_REGION>:<ACCOUNT_ID>:table/<TF_STATE_LOCK_TABLE>`
+
+Without these permissions, `terraform init` or lock acquisition can fail in GitHub Actions.
+
+### Run order (GitHub-only flow)
+
+1. Configure variables (`AWS_ROLE_ARN`, `AWS_REGION`, backend variables)
+2. Run workflow **Terraform** with action `plan`
+3. Run workflow **Terraform** with action `apply`
+4. Run workflow **CI** (or push to `main`) to deploy app image and update ECS
+
+### Common backend errors
+
+- `Missing repository variable: TF_STATE_BUCKET`
+   - Add `TF_STATE_BUCKET` GitHub variable.
+- `NoSuchBucket` during init
+   - Create bucket or fix bucket name/region.
+- Locking errors
+   - Validate `TF_STATE_LOCK_TABLE` name and DynamoDB permissions.
 
