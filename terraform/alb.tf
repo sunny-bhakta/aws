@@ -11,7 +11,7 @@ resource "aws_lb" "app" {
 }
 
 resource "aws_lb_target_group" "app" {
-  name        = "${var.project_name}-tg"
+  name_prefix = "dnstg-"
   port        = var.container_port
   protocol    = "HTTP"
   target_type = "ip"
