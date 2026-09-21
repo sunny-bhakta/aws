@@ -375,33 +375,19 @@ Example:
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:sunny-bhakta@77013204/aws@1361501698:ref:refs/heads/main"
+               "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+            },
+            "StringLike": {
+               "token.actions.githubusercontent.com:sub": [
+                  "repo:sunny-bhakta/aws:ref:refs/heads/main",
+                  "repo:sunny-bhakta@*/aws@*:ref:refs/heads/main",
+                  "repo:sunny-bhakta@77013204/aws@1361501698:ref:refs/heads/main"
+               ]
         }
       }
     }
   ]
 }
-```
-```json
-// {
-//   "Version": "2012-10-17",
-//   "Statement": [
-//     {
-//       "Effect": "Allow",
-//       "Principal": {
-//         "Federated": "arn:aws:iam::831975835566:oidc-provider/token.actions.githubusercontent.com"
-//       },
-//       "Action": "sts:AssumeRoleWithWebIdentity",
-//       "Condition": {
-//         "StringEquals": {
-//           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-//           "token.actions.githubusercontent.com:sub": "repo:sunny-bhakta/aws:ref:refs/heads/main"
-//         }
-//       }
-//     }
-//   ]
-// }
 ```
 
 This allows the `main` branch of:
@@ -523,11 +509,7 @@ Policy:
 }
 ```
 
-Policy name:
-
-```text
-github-actions-ecs-passrole
-```
+This can be attached as a separate policy, or included in the same inline policy as ECS deploy actions.
 
 ## Why is this needed?
 
@@ -1614,6 +1596,65 @@ exists on:
 ```text
 github-actions-ecr-push
 ```
+
+---
+
+## GitHub Actions: `DescribeServices` AccessDenied
+
+If you see:
+
+```text
+is not authorized to perform: ecs:DescribeServices
+```
+
+verify all of the following:
+
+1. Workflow uses the correct role ARN:
+
+```text
+arn:aws:iam::831975835566:role/github-actions-ecr-push
+```
+
+2. The role has an inline/attached policy allowing:
+
+```text
+ecs:DescribeServices
+ecs:UpdateService
+ecs:DescribeTaskDefinition
+ecs:RegisterTaskDefinition
+```
+
+If the policy is currently scoped to a specific ECS service ARN and this error still occurs, allow ECS **read** actions on `*`:
+
+```json
+{
+   "Effect": "Allow",
+   "Action": [
+      "ecs:DescribeClusters",
+      "ecs:DescribeServices",
+      "ecs:DescribeTaskDefinition"
+   ],
+   "Resource": "*"
+}
+```
+
+Keep write access (`ecs:UpdateService`) scoped to your service ARN.
+
+Example service ARN path for this project:
+
+```text
+arn:aws:ecs:ap-south-1:831975835566:service/devops-cluster/devops-nestjs-service
+```
+
+If you also scope cluster reads, use:
+
+```text
+arn:aws:ecs:ap-south-1:831975835566:cluster/devops-cluster
+```
+
+3. IAM changes were actually applied (not only validated in Terraform).
+
+4. Re-run workflow after policy update (new session picks updated permissions).
 
 ---
 

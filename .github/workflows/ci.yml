@@ -175,7 +175,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     env:
-      AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
 
     permissions:
       contents: read
@@ -329,7 +329,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     env:
-      AWS_REGION: ${{ vars.AWS_REGION != '' && vars.AWS_REGION || 'ap-south-1' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'ap-south-1' }}
       ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
       ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
       ECS_SERVICE: ${{ vars.ECS_SERVICE }}

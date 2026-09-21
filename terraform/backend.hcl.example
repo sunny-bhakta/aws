@@ -1,0 +1,10 @@
+# Example backend config for S3 remote state.
+# Usage:
+# terraform init -backend-config=backend.hcl
+
+bucket         = "your-terraform-state-bucket"
+key            = "aws/devops-nestjs/terraform.tfstate"
+region         = "ap-south-1"
+encrypt        = true
+# Optional for older locking pattern:
+# dynamodb_table = "your-terraform-lock-table"
